@@ -84,6 +84,7 @@ def generate_icebreaker(firma, web):
     return response.content[0].text
 
 st.title("Neonmedia — Icebreaker Generator")
+st.caption("Auto-deploy z GitHubu ✓")
 
 firma = st.text_input("Název firmy")
 web = st.text_input("Web (URL)")
