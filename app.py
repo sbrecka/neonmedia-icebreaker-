@@ -90,7 +90,8 @@ def review(icebreaker):
     )
     text = response.content[0].text.strip()
     text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(text)
+    obj, _ = json.JSONDecoder().raw_decode(text)
+    return obj
 
 def run_pipeline(firma, web, max_revisions=2):
     facts = research(firma, web)
