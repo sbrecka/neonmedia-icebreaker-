@@ -1,5 +1,6 @@
 import streamlit as st
-import anthropic, os, requests, json
+import anthropic, os, requests, json, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pathlib import Path
@@ -248,13 +249,27 @@ with st.container(border=True):
         df.columns = df.columns.str.lower()
 
         if st.button("Generovat pro všechny"):
-            results = []
+            start = time.time()
+            results = [None] * len(df)
             progress = st.progress(0)
+            status = st.empty()
+            done = 0
 
-            for i, row in df.iterrows():
-                icebreaker = run_pipeline(row["name"], row["website"], max_revisions=1)
-                results.append({**row.to_dict(), "icebreaker": icebreaker or "FALLBACK"})
-                progress.progress((i + 1) / len(df))
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {
+                    executor.submit(run_pipeline, row["name"], row["website"], 1): i
+                    for i, row in df.iterrows()
+                }
+                for future in as_completed(futures):
+                    i = futures[future]
+                    icebreaker = future.result()
+                    results[i] = {**df.iloc[i].to_dict(), "icebreaker": icebreaker or "FALLBACK"}
+                    done += 1
+                    progress.progress(done / len(df))
+                    status.text(f"{done}/{len(df)} hotovo")
+
+            elapsed = time.time() - start
+            st.info(f"Hotovo za {elapsed:.1f}s (5 firem paralelně)")
 
             result_df = pd.DataFrame(results)
             csv_out = result_df.to_csv(index=False).encode("utf-8-sig")
