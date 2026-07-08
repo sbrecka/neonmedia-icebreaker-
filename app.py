@@ -4,6 +4,79 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pathlib import Path
 
+st.set_page_config(page_title="Neonmedia — Icebreaker Generator", page_icon="⚡", layout="centered")
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+#MainMenu, footer, header { visibility: hidden; }
+
+.stApp {
+    background: radial-gradient(circle at 20% 0%, rgba(108,92,231,0.10), transparent 45%),
+                radial-gradient(circle at 100% 30%, rgba(70,160,255,0.08), transparent 40%);
+}
+
+h1 {
+    font-weight: 800 !important;
+    letter-spacing: -1.5px;
+    background: linear-gradient(90deg, #ffffff 0%, #b9aaff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.pipeline-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 14px; border-radius: 999px;
+    background: rgba(108,92,231,0.12);
+    border: 1px solid rgba(108,92,231,0.35);
+    color: #c9bfff; font-size: 13px; font-weight: 500;
+    margin-bottom: 28px;
+}
+
+div[data-testid="stTextInput"] input {
+    border-radius: 12px !important;
+    background: rgba(255,255,255,0.04) !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
+    padding: 10px 14px !important;
+}
+div[data-testid="stTextInput"] input:focus {
+    border: 1px solid #6C5CE7 !important;
+    box-shadow: 0 0 0 3px rgba(108,92,231,0.25) !important;
+}
+
+.stButton button {
+    border-radius: 10px !important;
+    background: linear-gradient(90deg, #6C5CE7, #46A0FF) !important;
+    color: white !important;
+    border: none !important;
+    font-weight: 600 !important;
+    padding: 8px 22px !important;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.stButton button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(108,92,231,0.35);
+}
+
+div[data-testid="stExpander"] {
+    border-radius: 12px !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    background: rgba(255,255,255,0.02) !important;
+}
+
+div[data-testid="stAlertContainer"] {
+    border-radius: 12px !important;
+}
+
+div[data-testid="stFileUploaderDropzone"] {
+    border-radius: 12px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 load_dotenv(Path(__file__).parent / ".env")
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-haiku-4-5-20251001"
@@ -109,13 +182,16 @@ def run_pipeline(firma, web, max_revisions=2):
 
     return icebreaker
 
-st.title("Neonmedia — Icebreaker Generator")
-st.caption("Multi-agent: research → copywriter → review")
+st.title("Neonmedia")
+st.markdown('<span class="pipeline-pill">⚡ Research → Copywriter → Review</span>', unsafe_allow_html=True)
 
-firma = st.text_input("Název firmy")
-web = st.text_input("Web (URL)")
+with st.container(border=True):
+    st.subheader("Icebreaker Generator")
+    firma = st.text_input("Název firmy", placeholder="např. Leftclick")
+    web = st.text_input("Web (URL)", placeholder="https://...")
+    generate = st.button("Generovat", use_container_width=False)
 
-if st.button("Generovat"):
+if generate:
     if not firma or not web:
         st.warning("Vyplň obě pole.")
     else:
@@ -125,7 +201,7 @@ if st.button("Generovat"):
         if facts.strip() == "FALLBACK":
             st.error("FALLBACK — web neobsahuje použitelná fakta.")
         else:
-            with st.expander("Research agent — nalezená fakta"):
+            with st.expander("🔍 Research agent — nalezená fakta"):
                 st.text(facts)
 
             feedback = None
@@ -136,7 +212,8 @@ if st.button("Generovat"):
                 with st.spinner("Review agent kontroluje..."):
                     verdict = review(icebreaker)
 
-                with st.expander(f"Pokus {attempt + 1}: {icebreaker}", expanded=(verdict["verdict"] != "APPROVED")):
+                icon = "✅" if verdict["verdict"] == "APPROVED" else "🔁"
+                with st.expander(f"{icon} Pokus {attempt + 1}: {icebreaker}", expanded=(verdict["verdict"] != "APPROVED")):
                     st.write(f"**Verdikt:** {verdict['verdict']}")
                     if verdict["feedback"]:
                         st.write(f"**Feedback:** {verdict['feedback']}")
@@ -147,27 +224,27 @@ if st.button("Generovat"):
 
             st.success(icebreaker)
 
-st.divider()
-st.subheader("Batch — CSV")
+st.write("")
+with st.container(border=True):
+    st.subheader("Batch — CSV")
+    uploaded = st.file_uploader("Nahraj CSV (musí mít sloupce 'name' a 'website')", type="csv")
 
-uploaded = st.file_uploader("Nahraj CSV (musí mít sloupce 'name' a 'website')", type="csv")
+    if uploaded:
+        import pandas as pd
 
-if uploaded:
-    import pandas as pd
+        df = pd.read_csv(uploaded)
+        df.columns = df.columns.str.lower()
 
-    df = pd.read_csv(uploaded)
-    df.columns = df.columns.str.lower()
+        if st.button("Generovat pro všechny"):
+            results = []
+            progress = st.progress(0)
 
-    if st.button("Generovat pro všechny"):
-        results = []
-        progress = st.progress(0)
+            for i, row in df.iterrows():
+                icebreaker = run_pipeline(row["name"], row["website"], max_revisions=1)
+                results.append({**row.to_dict(), "icebreaker": icebreaker or "FALLBACK"})
+                progress.progress((i + 1) / len(df))
 
-        for i, row in df.iterrows():
-            icebreaker = run_pipeline(row["name"], row["website"], max_revisions=1)
-            results.append({**row.to_dict(), "icebreaker": icebreaker or "FALLBACK"})
-            progress.progress((i + 1) / len(df))
+            result_df = pd.DataFrame(results)
+            csv_out = result_df.to_csv(index=False).encode("utf-8-sig")
 
-        result_df = pd.DataFrame(results)
-        csv_out = result_df.to_csv(index=False).encode("utf-8-sig")
-
-        st.download_button("Stáhnout CSV", csv_out, "icebreakery.csv", "text/csv")
+            st.download_button("Stáhnout CSV", csv_out, "icebreakery.csv", "text/csv")
