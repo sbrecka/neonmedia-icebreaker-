@@ -4,75 +4,87 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pathlib import Path
 
-st.set_page_config(page_title="Neonmedia — Icebreaker Generator", page_icon="⚡", layout="centered")
+# TODO: až vymyslíš finální jméno appky, stačí přepsat tuhle proměnnou
+APP_NAME = "Icebreaker"
+
+st.set_page_config(page_title=APP_NAME, page_icon="◐", layout="centered")
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+html, body, [class*="css"] { font-family: 'Space Grotesk', sans-serif; }
 
 #MainMenu, footer, header { visibility: hidden; }
 
 .stApp {
-    background: radial-gradient(circle at 20% 0%, rgba(108,92,231,0.10), transparent 45%),
-                radial-gradient(circle at 100% 30%, rgba(70,160,255,0.08), transparent 40%);
+    background-color: #0a0a0b;
+    background-image:
+        radial-gradient(circle at 75% 15%, rgba(255,255,255,0.14), transparent 40%),
+        radial-gradient(circle at 15% 85%, rgba(255,255,255,0.06), transparent 45%);
 }
 
 h1 {
-    font-weight: 800 !important;
-    letter-spacing: -1.5px;
-    background: linear-gradient(90deg, #ffffff 0%, #b9aaff 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    font-weight: 700 !important;
+    letter-spacing: -2px;
+    font-size: 3rem !important;
+    color: #ffffff !important;
 }
 
 .pipeline-pill {
     display: inline-flex; align-items: center; gap: 8px;
     padding: 6px 14px; border-radius: 999px;
-    background: rgba(108,92,231,0.12);
-    border: 1px solid rgba(108,92,231,0.35);
-    color: #c9bfff; font-size: 13px; font-weight: 500;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14);
+    color: #b3b3b8; font-size: 13px; font-weight: 500;
     margin-bottom: 28px;
 }
 
 div[data-testid="stTextInput"] input {
-    border-radius: 12px !important;
+    border-radius: 999px !important;
     background: rgba(255,255,255,0.04) !important;
-    border: 1px solid rgba(255,255,255,0.10) !important;
-    padding: 10px 14px !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    padding: 10px 18px !important;
+    color: #ffffff !important;
 }
 div[data-testid="stTextInput"] input:focus {
-    border: 1px solid #6C5CE7 !important;
-    box-shadow: 0 0 0 3px rgba(108,92,231,0.25) !important;
+    border: 1px solid rgba(255,255,255,0.5) !important;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.08) !important;
 }
 
 .stButton button {
-    border-radius: 10px !important;
-    background: linear-gradient(90deg, #6C5CE7, #46A0FF) !important;
-    color: white !important;
+    border-radius: 999px !important;
+    background: #ffffff !important;
+    color: #0a0a0b !important;
     border: none !important;
     font-weight: 600 !important;
-    padding: 8px 22px !important;
+    padding: 8px 26px !important;
     transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .stButton button:hover {
     transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(108,92,231,0.35);
+    box-shadow: 0 8px 22px rgba(255,255,255,0.18);
+    color: #0a0a0b !important;
 }
 
 div[data-testid="stExpander"] {
-    border-radius: 12px !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 16px !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
     background: rgba(255,255,255,0.02) !important;
 }
 
 div[data-testid="stAlertContainer"] {
-    border-radius: 12px !important;
+    border-radius: 16px !important;
 }
 
 div[data-testid="stFileUploaderDropzone"] {
-    border-radius: 12px !important;
+    border-radius: 16px !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 20px !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
+    background: rgba(255,255,255,0.02) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -114,12 +126,12 @@ def call_with_tool(system, user_msg):
         response = client.messages.create(model=MODEL, max_tokens=500, tools=tools, messages=messages, system=system)
     return response.content[0].text
 
-RESEARCH_SYSTEM = """Jsi research agent pro cold email agenturu Neonmedia.
+RESEARCH_SYSTEM = """Jsi research agent pro cold email outreach.
 Najdi na webu firmy 3-5 konkrétních faktů použitelných pro icebreaker: produkty, projekty, čísla, klienty.
 Vrať je jako odrážky, žádný úvod ani závěr. Pokud web nic užitečného neobsahuje, napiš přesně: FALLBACK
 """
 
-COPYWRITER_SYSTEM = """Jsi copywriter agent pro cold email agenturu Neonmedia.
+COPYWRITER_SYSTEM = """Jsi copywriter agent pro cold email outreach.
 Na základě dodaných faktů o firmě napiš icebreaker.
 
 Pravidla:
@@ -133,7 +145,7 @@ Pravidla:
 Vrať POUZE samotný icebreaker, žádné uvozovky ani prefix.
 """
 
-REVIEW_SYSTEM = """Jsi review agent pro cold email agenturu Neonmedia. Kontroluješ icebreakery podle pravidel:
+REVIEW_SYSTEM = """Jsi review agent pro cold email outreach. Kontroluješ icebreakery podle pravidel:
 - max 30 slov, 1-2 věty
 - obsahuje konkrétní fakt (číslo, produkt, projekt) — ne obecnou frázi
 - nezačíná "Dobrý den" ani "Ahoj"
@@ -182,11 +194,11 @@ def run_pipeline(firma, web, max_revisions=2):
 
     return icebreaker
 
-st.title("Neonmedia")
-st.markdown('<span class="pipeline-pill">⚡ Research → Copywriter → Review</span>', unsafe_allow_html=True)
+st.title(APP_NAME)
+st.markdown('<span class="pipeline-pill">◐ Research → Copywriter → Review</span>', unsafe_allow_html=True)
 
 with st.container(border=True):
-    st.subheader("Icebreaker Generator")
+    st.subheader("Vygeneruj icebreaker")
     firma = st.text_input("Název firmy", placeholder="např. Leftclick")
     web = st.text_input("Web (URL)", placeholder="https://...")
     generate = st.button("Generovat", use_container_width=False)
