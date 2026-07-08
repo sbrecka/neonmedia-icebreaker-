@@ -1,6 +1,7 @@
 import streamlit as st
-import anthropic, os, requests, json, time
+import anthropic, os, requests, json, time, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pathlib import Path
@@ -94,6 +95,18 @@ load_dotenv(Path(__file__).parent / ".env")
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-haiku-4-5-20251001"
 
+MEMORY_FILE = Path(__file__).parent / "agent_memory.json"
+MAX_MISTAKES = 10  # kolik posledních review-feedbacků si agent pamatuje napříč běhy
+MEMORY_LOCK = threading.Lock()  # batch běží paralelně (Den 30) — chrání soubor před souběžným zápisem
+
+def load_memory():
+    if MEMORY_FILE.exists():
+        return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+    return {"companies": {}, "mistakes": []}
+
+def save_memory(memory):
+    MEMORY_FILE.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+
 tools = [
     {
         "name": "fetch_website",
@@ -159,8 +172,11 @@ Pokud APPROVED, feedback nech prázdný string.
 def research(firma, web):
     return call_with_tool(RESEARCH_SYSTEM, f"Prozkoumej firmu {firma}, web: {web}")
 
-def write_icebreaker(firma, facts, feedback=None):
+def write_icebreaker(firma, facts, feedback=None, known_mistakes=None):
     prompt = f"Firma: {firma}\nFakta:\n{facts}"
+    if known_mistakes:
+        prompt += "\n\nChyby, které jsi dělal v minulých bězích — nedělej je znovu:\n"
+        prompt += "\n".join(f"- {m}" for m in known_mistakes)
     if feedback:
         prompt += f"\n\nFeedback od review agenta, uprav podle něj: {feedback}"
     response = client.messages.create(
@@ -179,7 +195,13 @@ def review(icebreaker):
     obj, _ = json.JSONDecoder().raw_decode(text)
     return obj
 
-def run_pipeline(firma, web, max_revisions=2):
+def run_pipeline(firma, web, max_revisions=2, force=False):
+    with MEMORY_LOCK:
+        memory = load_memory()
+        cached = memory["companies"].get(firma)
+    if cached and not force:
+        return cached["icebreaker"]
+
     facts = research(firma, web)
     if facts.strip() == "FALLBACK":
         return None
@@ -187,12 +209,24 @@ def run_pipeline(firma, web, max_revisions=2):
     feedback = None
     icebreaker = None
     for _ in range(max_revisions + 1):
-        icebreaker = write_icebreaker(firma, facts, feedback)
+        icebreaker = write_icebreaker(firma, facts, feedback, known_mistakes=memory["mistakes"])
         verdict = review(icebreaker)
-        if verdict["verdict"] == "APPROVED":
-            return icebreaker
-        feedback = verdict["feedback"]
 
+        if verdict["verdict"] == "APPROVED":
+            with MEMORY_LOCK:
+                memory = load_memory()  # reload — jiné vlákno mohlo mezitím zapsat
+                memory["companies"][firma] = {"icebreaker": icebreaker, "web": web, "date": date.today().isoformat()}
+                save_memory(memory)
+            return icebreaker
+
+        feedback = verdict["feedback"]
+        if feedback and feedback not in memory["mistakes"]:
+            memory["mistakes"] = (memory["mistakes"] + [feedback])[-MAX_MISTAKES:]
+
+    with MEMORY_LOCK:
+        fresh = load_memory()
+        fresh["mistakes"] = memory["mistakes"]
+        save_memory(fresh)
     return icebreaker
 
 st.title(APP_NAME)
@@ -208,34 +242,54 @@ if generate:
     if not firma or not web:
         st.warning("Vyplň obě pole.")
     else:
-        with st.spinner("Research agent hledá fakta..."):
-            facts = research(firma, web)
+        with MEMORY_LOCK:
+            memory = load_memory()
+            cached = memory["companies"].get(firma)
 
-        if facts.strip() == "FALLBACK":
-            st.error("FALLBACK — web neobsahuje použitelná fakta.")
+        if cached:
+            st.info(f"◐ Z paměti (zpracováno {cached['date']}) — API se nevolalo")
+            st.success(cached["icebreaker"])
         else:
-            with st.expander("🔍 Research agent — nalezená fakta"):
-                st.text(facts)
+            with st.spinner("Research agent hledá fakta..."):
+                facts = research(firma, web)
 
-            feedback = None
-            icebreaker = None
-            for attempt in range(3):
-                with st.spinner(f"Copywriter agent píše (pokus {attempt + 1})..."):
-                    icebreaker = write_icebreaker(firma, facts, feedback)
-                with st.spinner("Review agent kontroluje..."):
-                    verdict = review(icebreaker)
+            if facts.strip() == "FALLBACK":
+                st.error("FALLBACK — web neobsahuje použitelná fakta.")
+            else:
+                with st.expander("🔍 Research agent — nalezená fakta"):
+                    st.text(facts)
+                if memory["mistakes"]:
+                    with st.expander(f"◐ Paměť — {len(memory['mistakes'])} chyb z minulých běhů, které se copywriter snaží neopakovat"):
+                        st.write("\n\n".join(memory["mistakes"]))
 
-                icon = "✅" if verdict["verdict"] == "APPROVED" else "🔁"
-                with st.expander(f"{icon} Pokus {attempt + 1}: {icebreaker}", expanded=(verdict["verdict"] != "APPROVED")):
-                    st.write(f"**Verdikt:** {verdict['verdict']}")
-                    if verdict["feedback"]:
-                        st.write(f"**Feedback:** {verdict['feedback']}")
+                feedback = None
+                icebreaker = None
+                for attempt in range(3):
+                    with st.spinner(f"Copywriter agent píše (pokus {attempt + 1})..."):
+                        icebreaker = write_icebreaker(firma, facts, feedback, known_mistakes=memory["mistakes"])
+                    with st.spinner("Review agent kontroluje..."):
+                        verdict = review(icebreaker)
 
-                if verdict["verdict"] == "APPROVED":
-                    break
-                feedback = verdict["feedback"]
+                    icon = "✅" if verdict["verdict"] == "APPROVED" else "🔁"
+                    with st.expander(f"{icon} Pokus {attempt + 1}: {icebreaker}", expanded=(verdict["verdict"] != "APPROVED")):
+                        st.write(f"**Verdikt:** {verdict['verdict']}")
+                        if verdict["feedback"]:
+                            st.write(f"**Feedback:** {verdict['feedback']}")
 
-            st.success(icebreaker)
+                    if verdict["verdict"] == "APPROVED":
+                        break
+                    feedback = verdict["feedback"]
+                    if feedback and feedback not in memory["mistakes"]:
+                        memory["mistakes"] = (memory["mistakes"] + [feedback])[-MAX_MISTAKES:]
+
+                with MEMORY_LOCK:
+                    fresh = load_memory()
+                    fresh["mistakes"] = memory["mistakes"]
+                    if verdict["verdict"] == "APPROVED":
+                        fresh["companies"][firma] = {"icebreaker": icebreaker, "web": web, "date": date.today().isoformat()}
+                    save_memory(fresh)
+
+                st.success(icebreaker)
 
 st.write("")
 with st.container(border=True):
