@@ -285,11 +285,52 @@ if generate:
                 with MEMORY_LOCK:
                     fresh = load_memory()
                     fresh["mistakes"] = memory["mistakes"]
-                    if verdict["verdict"] == "APPROVED":
-                        fresh["companies"][firma] = {"icebreaker": icebreaker, "web": web, "date": date.today().isoformat()}
                     save_memory(fresh)
 
-                st.success(icebreaker)
+                # finální rozhodnutí necháváme na člověku (Den 32 — human-in-the-loop)
+                st.session_state.hitl = {
+                    "firma": firma, "web": web, "facts": facts,
+                    "icebreaker": icebreaker, "mistakes": memory["mistakes"],
+                }
+
+hitl = st.session_state.get("hitl")
+if hitl:
+    st.divider()
+    st.markdown("**◐ Na tobě — schválit, nebo poslat zpátky s feedbackem?**")
+    edited = st.text_area("Icebreaker", value=hitl["icebreaker"], key="hitl_text", label_visibility="collapsed")
+
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        approve = st.button("✅ Schválit")
+    with col2:
+        human_feedback = st.text_input("Feedback pro přepsání", placeholder="co je špatně?", label_visibility="collapsed")
+        reject = st.button("🔁 Zamítnout a přegenerovat")
+
+    if approve:
+        with MEMORY_LOCK:
+            fresh = load_memory()
+            fresh["companies"][hitl["firma"]] = {
+                "icebreaker": edited, "web": hitl["web"], "date": date.today().isoformat()
+            }
+            save_memory(fresh)
+        st.success(f"Schváleno a uloženo do paměti: {edited}")
+        del st.session_state.hitl
+
+    elif reject and not human_feedback:
+        st.warning("Napiš feedback, ať ví copywriter co má opravit.")
+
+    elif reject and human_feedback:
+        with st.spinner("Copywriter přepisuje podle tvého feedbacku..."):
+            new_icebreaker = write_icebreaker(hitl["firma"], hitl["facts"], human_feedback, known_mistakes=hitl["mistakes"])
+        mistakes = hitl["mistakes"]
+        if human_feedback not in mistakes:
+            mistakes = (mistakes + [human_feedback])[-MAX_MISTAKES:]
+        with MEMORY_LOCK:
+            fresh = load_memory()
+            fresh["mistakes"] = mistakes
+            save_memory(fresh)
+        st.session_state.hitl = {**hitl, "icebreaker": new_icebreaker, "mistakes": mistakes}
+        st.rerun()
 
 st.write("")
 with st.container(border=True):
@@ -326,6 +367,22 @@ with st.container(border=True):
             st.info(f"Hotovo za {elapsed:.1f}s (5 firem paralelně)")
 
             result_df = pd.DataFrame(results)
-            csv_out = result_df.to_csv(index=False).encode("utf-8-sig")
+            result_df.insert(0, "schváleno", True)
+            st.session_state.batch_results = result_df
 
-            st.download_button("Stáhnout CSV", csv_out, "icebreakery.csv", "text/csv")
+    if "batch_results" in st.session_state:
+        st.write("◐ Zkontroluj a uprav před stažením — needité řádky odškrtni:")
+        edited_df = st.data_editor(
+            st.session_state.batch_results,
+            column_config={"schváleno": st.column_config.CheckboxColumn("Schváleno")},
+            disabled=[c for c in st.session_state.batch_results.columns if c not in ("icebreaker", "schváleno")],
+            hide_index=True,
+            key="batch_editor",
+        )
+        approved_df = edited_df[edited_df["schváleno"]].drop(columns=["schváleno"])
+        csv_out = approved_df.to_csv(index=False).encode("utf-8-sig")
+
+        st.download_button(
+            f"Stáhnout schválené ({len(approved_df)}/{len(edited_df)})",
+            csv_out, "icebreakery.csv", "text/csv"
+        )
