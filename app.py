@@ -253,6 +253,7 @@ if generate:
             cached = memory["companies"].get(firma)
 
         if cached:
+            st.session_state.pop("hitl", None)  # ať se nezobrazí rozpracovaný checkpoint z předchozí firmy
             st.info(f"◐ Z paměti (zpracováno {cached['date']}) — API se nevolalo")
             st.success(cached["icebreaker"])
         else:
@@ -298,6 +299,8 @@ if generate:
                     "firma": firma, "web": web, "facts": facts,
                     "icebreaker": icebreaker, "mistakes": memory["mistakes"],
                 }
+                st.session_state["hitl_text"] = icebreaker  # jinak by textarea ukázala starý widget-stav z minulého běhu
+                st.session_state["hitl_feedback"] = ""
 
 hitl = st.session_state.get("hitl")
 if hitl:
