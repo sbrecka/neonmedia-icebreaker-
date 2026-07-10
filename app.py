@@ -306,7 +306,7 @@ hitl = st.session_state.get("hitl")
 if hitl:
     st.divider()
     st.markdown("**◐ Na tobě — schválit, nebo poslat zpátky s feedbackem?**")
-    edited = st.text_area("Icebreaker", value=hitl["icebreaker"], key="hitl_text", label_visibility="collapsed")
+    edited = st.text_area("Icebreaker", key="hitl_text", label_visibility="collapsed")
 
     col1, col2 = st.columns([1, 2])
     with col1:
