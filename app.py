@@ -155,8 +155,9 @@ Pravidla:
 - Nikdy nezačínaj "Dobrý den" ani "Ahoj"
 - Žádné vysvětlování, žádné otázky — jen icebreaker
 - Pokud dostaneš od review agenta feedback, uprav icebreaker podle něj
+- I když ti fakta nebo feedback přijdou nejasná či nedostatečná, nikdy nepiš vysvětlení, omluvu ani žádost o víc informací — vždy vrať alespoň nejlepší možný icebreaker z toho, co máš
 
-Vrať POUZE samotný icebreaker, žádné uvozovky ani prefix.
+Vrať POUZE samotný icebreaker, žádné uvozovky ani prefix, žádný jiný text.
 """
 
 REVIEW_SYSTEM = """Jsi review agent pro cold email outreach. Kontroluješ icebreakery podle pravidel:
@@ -192,8 +193,13 @@ def review(icebreaker):
     )
     text = response.content[0].text.strip()
     text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    obj, _ = json.JSONDecoder().raw_decode(text)
-    return obj
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text)
+        return obj
+    except json.JSONDecodeError:
+        # review agent někdy odmítne odpovědět v JSON (např. dostane nesmyslný vstup) —
+        # radši to vezmeme jako REJECTED s vysvětlením, než ať appka spadne
+        return {"verdict": "REJECTED", "feedback": f"Review agent nevrátil platný JSON: {text[:200]}"}
 
 def run_pipeline(firma, web, max_revisions=2, force=False):
     with MEMORY_LOCK:
