@@ -309,7 +309,7 @@ if hitl:
     with col1:
         approve = st.button("✅ Schválit")
     with col2:
-        human_feedback = st.text_input("Feedback pro přepsání", placeholder="co je špatně?", label_visibility="collapsed")
+        human_feedback = st.text_input("Feedback pro přepsání", placeholder="co je špatně?", key="hitl_feedback", label_visibility="collapsed")
         reject = st.button("🔁 Zamítnout a přegenerovat")
 
     if approve:
@@ -336,6 +336,8 @@ if hitl:
             fresh["mistakes"] = mistakes
             save_memory(fresh)
         st.session_state.hitl = {**hitl, "icebreaker": new_icebreaker, "mistakes": mistakes}
+        st.session_state["hitl_text"] = new_icebreaker  # widget si drží vlastní stav, value= po prvním renderu nefunguje
+        st.session_state["hitl_feedback"] = ""
         st.rerun()
 
 st.write("")
