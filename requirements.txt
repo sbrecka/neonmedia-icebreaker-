@@ -4,3 +4,4 @@ requests==2.32.5
 beautifulsoup4==4.14.3
 python-dotenv==1.2.1
 pandas==2.3.3
+supabase==2.31.0

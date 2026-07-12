@@ -1,10 +1,10 @@
 import streamlit as st
-import anthropic, os, requests, json, time, threading
+import anthropic, os, requests, json, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pathlib import Path
+from supabase import create_client
 
 # TODO: až vymyslíš finální jméno appky, stačí přepsat tuhle proměnnou
 APP_NAME = "Icebreaker"
@@ -95,17 +95,22 @@ load_dotenv(Path(__file__).parent / ".env")
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-haiku-4-5-20251001"
 
-MEMORY_FILE = Path(__file__).parent / "agent_memory.json"
 MAX_MISTAKES = 10  # kolik posledních review-feedbacků si agent pamatuje napříč běhy
-MEMORY_LOCK = threading.Lock()  # batch běží paralelně (Den 30) — chrání soubor před souběžným zápisem
+db = create_client(os.environ["SUPABASE_ICEBREAKER_URL"], os.environ["SUPABASE_ICEBREAKER_SECRET_KEY"])
 
-def load_memory():
-    if MEMORY_FILE.exists():
-        return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-    return {"companies": {}, "mistakes": []}
+def get_company(firma):
+    res = db.table("companies").select("*").eq("firma", firma).limit(1).execute()
+    return res.data[0] if res.data else None
 
-def save_memory(memory):
-    MEMORY_FILE.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+def upsert_company(firma, web, icebreaker):
+    db.table("companies").upsert({"firma": firma, "web": web, "icebreaker": icebreaker}).execute()
+
+def get_mistakes():
+    res = db.table("mistakes").select("feedback").order("created_at", desc=True).limit(MAX_MISTAKES).execute()
+    return [row["feedback"] for row in res.data]
+
+def add_mistake(feedback):
+    db.table("mistakes").upsert({"feedback": feedback}, on_conflict="feedback").execute()
 
 tools = [
     {
@@ -202,9 +207,7 @@ def review(icebreaker):
         return {"verdict": "REJECTED", "feedback": f"Review agent nevrátil platný JSON: {text[:200]}"}
 
 def run_pipeline(firma, web, max_revisions=2, force=False):
-    with MEMORY_LOCK:
-        memory = load_memory()
-        cached = memory["companies"].get(firma)
+    cached = get_company(firma)
     if cached and not force:
         return cached["icebreaker"]
 
@@ -212,27 +215,22 @@ def run_pipeline(firma, web, max_revisions=2, force=False):
     if facts.strip() == "FALLBACK":
         return None
 
+    mistakes = get_mistakes()
     feedback = None
     icebreaker = None
     for _ in range(max_revisions + 1):
-        icebreaker = write_icebreaker(firma, facts, feedback, known_mistakes=memory["mistakes"])
+        icebreaker = write_icebreaker(firma, facts, feedback, known_mistakes=mistakes)
         verdict = review(icebreaker)
 
         if verdict["verdict"] == "APPROVED":
-            with MEMORY_LOCK:
-                memory = load_memory()  # reload — jiné vlákno mohlo mezitím zapsat
-                memory["companies"][firma] = {"icebreaker": icebreaker, "web": web, "date": date.today().isoformat()}
-                save_memory(memory)
+            upsert_company(firma, web, icebreaker)
             return icebreaker
 
         feedback = verdict["feedback"]
-        if feedback and feedback not in memory["mistakes"]:
-            memory["mistakes"] = (memory["mistakes"] + [feedback])[-MAX_MISTAKES:]
+        if feedback and feedback not in mistakes:
+            add_mistake(feedback)
+            mistakes.append(feedback)
 
-    with MEMORY_LOCK:
-        fresh = load_memory()
-        fresh["mistakes"] = memory["mistakes"]
-        save_memory(fresh)
     return icebreaker
 
 st.title(APP_NAME)
@@ -248,13 +246,11 @@ if generate:
     if not firma or not web:
         st.warning("Vyplň obě pole.")
     else:
-        with MEMORY_LOCK:
-            memory = load_memory()
-            cached = memory["companies"].get(firma)
+        cached = get_company(firma)
 
         if cached:
             st.session_state.pop("hitl", None)  # ať se nezobrazí rozpracovaný checkpoint z předchozí firmy
-            st.info(f"◐ Z paměti (zpracováno {cached['date']}) — API se nevolalo")
+            st.info(f"◐ Z paměti (zpracováno {cached['created_at'][:10]}) — API se nevolalo")
             st.success(cached["icebreaker"])
         else:
             with st.spinner("Research agent hledá fakta..."):
@@ -265,15 +261,16 @@ if generate:
             else:
                 with st.expander("🔍 Research agent — nalezená fakta"):
                     st.text(facts)
-                if memory["mistakes"]:
-                    with st.expander(f"◐ Paměť — {len(memory['mistakes'])} chyb z minulých běhů, které se copywriter snaží neopakovat"):
-                        st.write("\n\n".join(memory["mistakes"]))
+                mistakes = get_mistakes()
+                if mistakes:
+                    with st.expander(f"◐ Paměť — {len(mistakes)} chyb z minulých běhů, které se copywriter snaží neopakovat"):
+                        st.write("\n\n".join(mistakes))
 
                 feedback = None
                 icebreaker = None
                 for attempt in range(3):
                     with st.spinner(f"Copywriter agent píše (pokus {attempt + 1})..."):
-                        icebreaker = write_icebreaker(firma, facts, feedback, known_mistakes=memory["mistakes"])
+                        icebreaker = write_icebreaker(firma, facts, feedback, known_mistakes=mistakes)
                     with st.spinner("Review agent kontroluje..."):
                         verdict = review(icebreaker)
 
@@ -286,18 +283,14 @@ if generate:
                     if verdict["verdict"] == "APPROVED":
                         break
                     feedback = verdict["feedback"]
-                    if feedback and feedback not in memory["mistakes"]:
-                        memory["mistakes"] = (memory["mistakes"] + [feedback])[-MAX_MISTAKES:]
-
-                with MEMORY_LOCK:
-                    fresh = load_memory()
-                    fresh["mistakes"] = memory["mistakes"]
-                    save_memory(fresh)
+                    if feedback and feedback not in mistakes:
+                        add_mistake(feedback)
+                        mistakes.append(feedback)
 
                 # finální rozhodnutí necháváme na člověku (Den 32 — human-in-the-loop)
                 st.session_state.hitl = {
                     "firma": firma, "web": web, "facts": facts,
-                    "icebreaker": icebreaker, "mistakes": memory["mistakes"],
+                    "icebreaker": icebreaker, "mistakes": mistakes,
                 }
                 st.session_state["hitl_text"] = icebreaker  # jinak by textarea ukázala starý widget-stav z minulého běhu
                 st.session_state["hitl_feedback"] = ""
@@ -316,12 +309,7 @@ if hitl:
         reject = st.button("🔁 Zamítnout a přegenerovat")
 
     if approve:
-        with MEMORY_LOCK:
-            fresh = load_memory()
-            fresh["companies"][hitl["firma"]] = {
-                "icebreaker": edited, "web": hitl["web"], "date": date.today().isoformat()
-            }
-            save_memory(fresh)
+        upsert_company(hitl["firma"], hitl["web"], edited)
         st.success(f"Schváleno a uloženo do paměti: {edited}")
         del st.session_state.hitl
 
@@ -333,11 +321,8 @@ if hitl:
             new_icebreaker = write_icebreaker(hitl["firma"], hitl["facts"], human_feedback, known_mistakes=hitl["mistakes"])
         mistakes = hitl["mistakes"]
         if human_feedback not in mistakes:
-            mistakes = (mistakes + [human_feedback])[-MAX_MISTAKES:]
-        with MEMORY_LOCK:
-            fresh = load_memory()
-            fresh["mistakes"] = mistakes
-            save_memory(fresh)
+            add_mistake(human_feedback)
+            mistakes = mistakes + [human_feedback]
         st.session_state.hitl = {**hitl, "icebreaker": new_icebreaker, "mistakes": mistakes}
         st.session_state["hitl_text"] = new_icebreaker  # widget si drží vlastní stav, value= po prvním renderu nefunguje
         st.session_state["hitl_feedback"] = ""
